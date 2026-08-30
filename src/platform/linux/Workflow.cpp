@@ -1,5 +1,7 @@
 #include "llm_rewriter/RewriteService.hpp"
 
+#include "CurlHttpTransport.hpp"
+#include "llm_rewriter/Diagnostics.hpp"
 #include "llm_rewriter/History.hpp"
 #include "llm_rewriter/Notification.hpp"
 
@@ -51,8 +53,25 @@ RewriteResult RewriteAndRecord(const AppConfig& config,
                                const UserPaths& paths,
                                const RewriteRequest& request,
                                RewriteContext context) {
+  CurlHttpTransport transport;
+  CredentialDependencies dependencies;
+  dependencies.store = CreatePlatformCredentialStore();
+  dependencies.http = &transport;
+  CredentialResolver credentials(config.codex_auth_file, dependencies);
+  return RewriteAndRecord(config, paths, request, credentials, transport,
+                          context);
+}
+
+RewriteResult RewriteAndRecord(const AppConfig& config,
+                               const UserPaths& paths,
+                               const RewriteRequest& request,
+                               CredentialResolver& credentials,
+                               IHttpTransport& transport,
+                               RewriteContext context) {
+  JsonlDiagnosticSink diagnostics(paths.diagnostics_file);
   MaybeNotify(config, context, NotificationKind::Started);
-  auto result = RewriteWithLlm(config, request);
+  auto result = RewriteWithLlm(config, request, transport, credentials,
+                               nullptr, &diagnostics);
   AppendHistory(paths.history_file, config, request.input, result);
   if (result.ok) {
     MaybeNotify(config, context, NotificationKind::Succeeded);

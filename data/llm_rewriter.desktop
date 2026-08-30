@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=LLM Rewriter
+Comment=Rewrite selected or clipboard text with an LLM
+Exec=llm-rewriter-gtk4
+Terminal=false
+Categories=Utility;TextTools;
+StartupWMClass=llm_rewriter

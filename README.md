@@ -1,27 +1,14 @@
-# llm-rewriter
+# llm-rewriter Native
 
-Linux utility for rewriting drafts with an LLM while preserving the original text.
+C++20 application for rewriting drafts with an LLM on Linux and Windows. The CLI frontend is shared across platforms, with optional GTK4 presentation on Linux and platform-specific runtime services underneath.
 
-## Build
+## Dependencies
 
 Arch Linux:
 
 ```sh
 sudo pacman -S --needed \
-  base-devel \
-  cmake \
-  ninja \
-  pkgconf \
-  gcc \
-  wxwidgets-gtk3 \
-  curl \
-  nlohmann-json \
-  cli11 \
-  doctest \
-  wl-clipboard \
-  wtype \
-  xclip \
-  xsel
+    base-devel clang cli11 cmake curl doctest gtk4 libadwaita libnotify ninja nlohmann-json pkgconf wl-clipboard wtype xclip xdotool xsel ydotool
 ```
 
 APT-based distributions:
@@ -29,56 +16,87 @@ APT-based distributions:
 ```sh
 sudo apt update
 sudo apt install -y \
-  build-essential \
-  cmake \
-  ninja-build \
-  pkg-config \
-  libwxgtk3.2-dev \
-  libcurl4-openssl-dev \
-  nlohmann-json3-dev \
-  libcli11-dev \
-  doctest-dev \
-  wl-clipboard \
-  wtype \
-  xclip \
-  xsel \
-  xdotool
+    build-essential clang cmake doctest-dev libadwaita-1-dev libcli11-dev libcurl4-openssl-dev libgtk-4-dev libnotify-bin libsecret-tools ninja-build nlohmann-json3-dev pkg-config wl-clipboard wtype xclip xdotool xsel ydotool
 ```
 
-Build and test:
+## Peel Submodule
+
+The optional GTK4 frontend uses [peel], which is pinned in this repository as a Git submodule.
 
 ```sh
-cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
-cmake --build build
-ctest --test-dir build --output-on-failure
+git submodule update --init --recursive
 ```
 
-For local development with clang and LSP support:
+The CLI-only build does not require peel, but `make build GTK4=ON` does. CMake runs `peel/peel-gen.py` for that target and places generated headers in `build/peel-generated`.
+
+[peel]: https://gitlab.gnome.org/bugaevc/peel
+
+## Build And Test
+
+Build and test the CLI:
+
+```sh
+make build
+make test
+```
+
+Linux GTK4 frontend:
+
+```sh
+make build GTK4=ON
+```
+
+Equivalent CMake flow:
 
 ```sh
 cmake -S . -B build -G Ninja \
-  -DCMAKE_CXX_COMPILER=clang++ \
-  -DCMAKE_BUILD_TYPE=Debug \
-  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-ln -sf build/compile_commands.json compile_commands.json
+  -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Debug -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
+ln -sf build/compile_commands.json compile_commands.json
 ```
 
-Install:
+## Linux Desktop Installation
+
+Configure and build the GTK4 frontend before installing it:
 
 ```sh
-cmake --install build --prefix ~/.local
+make build GTK4=ON
 ```
+
+For a user-only installation, use `$HOME/.local` as the prefix:
+
+```sh
+cmake --install build --prefix "$HOME/.local"
+```
+
+This copies the launcher entry to `$HOME/.local/share/applications/llm_rewriter.desktop` and does not require root access. Ensure `$HOME/.local/bin` is in the environment inherited by your desktop session so the launcher's `Exec=llm-rewriter-gtk4 ...` command can find the executable. The install is application-only: it does not copy project headers or a separate backend shared library.
+
+For a system-wide installation, install the same build under `/usr`:
+
+```sh
+sudo cmake --install build --prefix /usr
+```
+
+This copies the entry to `/usr/share/applications/llm_rewriter.desktop` and the executables to `/usr/bin`. Build as your normal user and use `sudo` only for the install command.
+
+Uninstall the files recorded by the most recent install from this build tree:
+
+```sh
+cmake --build build --target uninstall
+```
+
+Use `sudo cmake --build build --target uninstall` if that manifest describes a system-wide `/usr` install. The target removes only paths listed in `build/install_manifest.txt`; it does not recursively delete installation directories. Running another install from the same build tree replaces that manifest, so use a separate build directory for each prefix when maintaining user and system installations at the same time.
+
+On Windows, the same `llm-rewriter` CLI target is built. Its HTTP transport uses WinHTTP and clipboard input/output is native. Automatic typing and paste currently fall back to the clipboard, and notifications are not yet emitted.
 
 ## CLI Usage
 
 ```sh
-llm-rewriter --input clipboard --output preview
-llm-rewriter --input primary --output preview
-llm-rewriter --input stdin --output stdout
+llm-rewriter doctor
+llm-rewriter doctor --live
+llm-rewriter --input stdin --output stdout --model openai/gpt-4.1-mini
 llm-rewriter --input stdin --output clipboard
-llm-rewriter --model openai/gpt-4.1-mini --reasoning-effort off --input stdin --output stdout
 sleep 0.25 && llm-rewriter --input primary --output type
 llm-rewriter --input clipboard --output paste --ctrl-c-before-output
 ```
@@ -86,144 +104,68 @@ llm-rewriter --input clipboard --output paste --ctrl-c-before-output
 Inputs:
 
 - `clipboard`: normal clipboard text
-- `primary`: Linux primary selection, when available
+- `primary`: Linux primary selection; equivalent to the clipboard on Windows
 - `stdin`: standard input
 
 Outputs:
 
-- `preview`: open the UI with original and rewritten text
+- `preview`: require a graphical frontend
 - `clipboard`: copy the rewrite
 - `stdout`: print the rewrite
-- `type`: type the rewrite with `wtype` or `xdotool`
+- `type`: type with `wtype`, `xdotool`, or `ydotool`
 - `paste`: copy the rewrite, then send the configured paste shortcut
 
 `type` and `paste` are best-effort. If synthetic input is unavailable or fails, the rewrite is copied to the clipboard and the fallback is reported.
 
-`--ctrl-c-before-output` applies only to `type` and `paste`. It can interrupt the focused application and is never enabled by default.
-
-Use shell composition when a delay is needed before synthetic output:
+## Linux UI Usage
 
 ```sh
-sleep 0.25 && llm-rewriter --input clipboard --output paste
+llm-rewriter-gtk4 --input clipboard
 ```
 
-## UI Usage
-
-The preview UI shows the original draft and the rewrite side by side. Press `Rewrite` to start the request. While refining, the original text is disabled and a spinner is shown. Notifications are not emitted by default while the UI is active.
-
-Actions:
-
-- `Copy Rewrite`
-- `Copy Original`
-- `Cancel`
-
-The desktop application id is `llm_rewriter`. On Sway, use a window rule if you want the preview UI to float:
-
-```ini
-for_window [app_id="llm_rewriter"] floating enable
-for_window [app_id="llm_rewriter"] resize set 900 650
-for_window [app_id="llm_rewriter"] move position center
-```
-
-For Xwayland/X11 fallback rules, target the class:
-
-```ini
-for_window [class="llm_rewriter"] floating enable
-```
+The GTK4 frontend uses libadwaita and exposes native preferences for provider, base URL, model, reasoning, input, credentials, and system prompt while keeping `config.json` as the native settings file.
 
 ## Configuration
 
-Config defaults to:
+Linux config defaults to:
 
 ```text
-${XDG_CONFIG_HOME:-$HOME/.config}/llm-rewriter/config.ini
+${XDG_CONFIG_HOME:-$HOME/.config}/llm-rewriter/config.json
 ```
 
-On first execution, `llm-rewriter` creates this file if it does not exist. The generated file keeps optional features commented out and leaves only `model` active because it is required for LLM calls.
-
-History defaults to append-only JSONL at:
+Linux history defaults to:
 
 ```text
 ${XDG_DATA_HOME:-$HOME/.local/share}/llm-rewriter/history.jsonl
 ```
 
-Example:
+Metadata-only request diagnostics are written alongside history as `diagnostics.jsonl`. They include request IDs, provider/model, HTTP status, provider request IDs when available, duration, and bounded error details; they never include prompts, output, or resolved credentials.
 
-```ini
-provider = openrouter
-api_format = openai_chat
-base_url = https://openrouter.ai/api/v1
-model = openai/gpt-4.1-mini
-reasoning_effort = low
-max_output_tokens_limit = 65536
+Windows config and history are stored under:
 
-input = primary
-output = type
-paste_shortcut = ctrl_shift_v
-
-api_key = ...    
-api_key_env = OPENROUTER_API_KEY
-timeout_ms = 30000
-history_enabled = true
-
-notification_mode = cli
-notification_events = lifecycle
-
-system_prompt = <<EOF
-Rewrite the user's current message as a clear, concise prompt for an AI coding agent.
-Return only the rewritten current prompt.
-EOF
+```text
+%APPDATA%\llm-rewriter\
 ```
 
-Supported `api_format` values:
+Built-in providers are `openai`, `anthropic`, `gemini`, `openrouter`, and `codex`. The `custom` provider covers local servers (for example Ollama, llama.cpp, or vLLM) and other compatible endpoints without a provider-specific integration.
+
+`custom` exposes the endpoint `base_url`, an `api_format` (`openai_chat`, `openai_responses`, or `anthropic_messages`), and optional JSON headers, query parameters, and request-body overrides. Credentials are optional, so local servers that do not require authentication work without a key. Built-in providers use their well-known endpoints and formats automatically.
+
+Supported API formats:
 
 - `openai_chat`
 - `openai_responses`
 - `anthropic_messages`
 
-Input/output defaults:
+Credentials are resolved at request time. For API-key providers, the canonical environment variable is checked first, followed by the optional `credentials.credential` value in `config.json`, then the platform credential store. The configured credential is the actual secret value, so protect the config file accordingly. Codex instead reuses the prefilled `~/.codex/auth.json` external auth file before its native store; that file is user-owned and may be refreshed in place but is never deleted or configured by this application. Secrets are never written to history.
 
-- `input = clipboard | primary | stdin`
-- `output = preview | clipboard | stdout | type | paste`
+Provider management is explicit:
 
-CLI flags override config values. `--model` overrides `model`; `--reasoning-effort` overrides `reasoning_effort`.
+    printf '%s' "$OPENROUTER_API_KEY" | llm-rewriter providers configure openrouter
+    llm-rewriter providers status openrouter
+    llm-rewriter providers clear openrouter
+    llm-rewriter providers configure codex --device-code
 
-Paste shortcut values:
+The CLI never accepts secrets as command-line arguments and a missing credential never starts OAuth during a rewrite.
 
-- `paste_shortcut = ctrl_v`
-- `paste_shortcut = ctrl_shift_v`
-- `paste_shortcut = shift_insert`
-
-`ctrl_shift_v` is commonly useful for terminal paste flows.
-
-Credentials:
-
-- `api_key = ...` uses an inline API key.
-- `api_key_env = ENV_NAME` reads an API key from an environment variable.
-- If both are present, the first valid declaration in the config file wins.
-- If neither is declared, the default `api_key_env = OPENROUTER_API_KEY` behavior is preserved.
-
-Notifications:
-
-- `notification_mode = cli`: default; notify for CLI workflows only
-- `notification_mode = always`: notify for CLI and UI workflows
-- `notification_mode = off`: never notify
-- `notification_events = lifecycle`: start, success, and failure
-- `notification_events = completion`: success and failure only
-- `notification_events = errors`: failure only
-
-## Completions
-
-```sh
-llm-rewriter --generate-completion bash
-llm-rewriter --generate-completion zsh
-llm-rewriter --generate-completion fish
-```
-
-Example install locations:
-
-```sh
-llm-rewriter --generate-completion bash > ~/.local/share/bash-completion/completions/llm-rewriter
-llm-rewriter --generate-completion zsh > ~/.local/share/zsh/site-functions/_llm-rewriter
-llm-rewriter --generate-completion fish > ~/.config/fish/completions/llm-rewriter.fish
-```
+Canonical environment variables are fixed: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY`, and `CODEX_ACCESS_TOKEN`. Environment-variable names are not configurable.

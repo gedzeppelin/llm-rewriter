@@ -66,6 +66,10 @@ bool SendCtrlCX11() {
   return RunCommand("xdotool key ctrl+c >/dev/null 2>&1");
 }
 
+bool SendCtrlCYdotool() {
+  return RunCommand("ydotool key 29:1 46:1 46:0 29:0 >/dev/null 2>&1");
+}
+
 bool SendPasteWayland(PasteShortcut shortcut) {
   switch (shortcut) {
     case PasteShortcut::CtrlV:
@@ -91,12 +95,34 @@ bool SendPasteX11(PasteShortcut shortcut) {
   return false;
 }
 
+bool SendPasteYdotool(PasteShortcut shortcut) {
+  switch (shortcut) {
+    case PasteShortcut::CtrlV:
+      return RunCommand("ydotool key 29:1 47:1 47:0 29:0 >/dev/null 2>&1");
+    case PasteShortcut::CtrlShiftV:
+      return RunCommand(
+          "ydotool key 29:1 42:1 47:1 47:0 42:0 29:0 >/dev/null 2>&1");
+    case PasteShortcut::ShiftInsert:
+      return RunCommand("ydotool key 42:1 110:1 110:0 42:0 >/dev/null 2>&1");
+  }
+  return false;
+}
+
 bool TypeWayland(const std::string& text) {
   return RunProgramWithText("wtype", nullptr, nullptr, text);
 }
 
 bool TypeX11(const std::string& text) {
   return RunProgramWithText("xdotool", "type", "--clearmodifiers", text);
+}
+
+bool TypeYdotool(const std::string& text) {
+  return RunProgramWithText("ydotool", "type", nullptr, text);
+}
+
+bool YdotoolReady() {
+  return CommandExists("ydotool") &&
+         RunCommand("pgrep -x ydotoold >/dev/null 2>&1");
 }
 
 bool FallbackClipboard(const std::string& text, std::string& message) {
@@ -140,6 +166,8 @@ bool WriteOutput(OutputMode mode,
           SendCtrlCWayland();
         } else if (x11 && CommandExists("xdotool")) {
           SendCtrlCX11();
+        } else if (YdotoolReady()) {
+          SendCtrlCYdotool();
         }
       }
 
@@ -149,6 +177,10 @@ bool WriteOutput(OutputMode mode,
       }
       if (x11 && CommandExists("xdotool") && TypeX11(text)) {
         message = "typed rewrite with xdotool";
+        return true;
+      }
+      if (YdotoolReady() && TypeYdotool(text)) {
+        message = "typed rewrite with ydotool";
         return true;
       }
 
@@ -163,6 +195,8 @@ bool WriteOutput(OutputMode mode,
           SendCtrlCWayland();
         } else if (x11 && CommandExists("xdotool")) {
           SendCtrlCX11();
+        } else if (YdotoolReady()) {
+          SendCtrlCYdotool();
         }
       }
 
@@ -179,6 +213,10 @@ bool WriteOutput(OutputMode mode,
       if (x11 && CommandExists("xdotool") &&
           SendPasteX11(options.paste_shortcut)) {
         message = "copied rewrite and pasted with xdotool";
+        return true;
+      }
+      if (YdotoolReady() && SendPasteYdotool(options.paste_shortcut)) {
+        message = "copied rewrite and pasted with ydotool";
         return true;
       }
 

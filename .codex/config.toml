@@ -1,0 +1,25 @@
+# Code intelligence
+[mcp_servers.codebase-memory-mcp]
+command = "/usr/sbin/codebase-memory-mcp"
+
+[mcp_servers.codebase-memory-mcp.tools.search_code]
+approval_mode = "approve"
+[mcp_servers.codebase-memory-mcp.tools.search_graph]
+approval_mode = "approve"
+[mcp_servers.codebase-memory-mcp.tools.detect_changes]
+approval_mode = "approve"
+[mcp_servers.codebase-memory-mcp.tools.get_architecture]
+approval_mode = "approve"
+[mcp_servers.codebase-memory-mcp.tools.get_code_snippet]
+approval_mode = "approve"
+[mcp_servers.codebase-memory-mcp.tools.trace_path]
+approval_mode = "approve"
+
+# >>> codebase-memory-mcp SessionStart >>>
+[[hooks.SessionStart]]
+matcher = "startup|resume|clear|compact"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "~/scripts/codex-index.sh"
+# <<< codebase-memory-mcp SessionStart <<<

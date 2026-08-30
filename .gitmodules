@@ -1,0 +1,4 @@
+[submodule "peel"]
+	path = peel
+	url = https://gitlab.gnome.org/bugaevc/peel.git
+    branch = main

@@ -55,18 +55,18 @@ _llm_rewriter_complete() {
       COMPREPLY=($(compgen -W "bash zsh fish" -- "$cur"))
       return 0
       ;;
-    --config|--model|--reasoning-effort)
+    --config|--model|--reasoning)
       return 0
       ;;
   esac
 
-  COMPREPLY=($(compgen -W "--input --output --model --reasoning-effort --config --help --generate-completion )" +
+  COMPREPLY=($(compgen -W "--input --output --model --reasoning --config --help --generate-completion )" +
 #if defined(__linux__)
          std::string("--ctrl-c-before-output ") +
 #else
          std::string{} +
 #endif
-         R"(" -- "$cur"))
+         R"(doctor providers" -- "$cur"))
 }
 complete -F _llm_rewriter_complete llm-rewriter
 )";
@@ -81,7 +81,7 @@ std::string ZshCompletion() {
       << "    '--output[Output mode]:output:(" << OutputChoicesForShell()
       << ")' \\\n"
       << "    '--model[LLM model id]:model:' \\\n"
-      << "    '--reasoning-effort[Reasoning effort]:reasoning:(off low medium high)' \\\n"
+      << "    '--reasoning[Provider-specific reasoning string]:reasoning:' \\\n"
       << "    '--config[Config file path]:config:_files' \\\n"
       << "    '--generate-completion[Generate shell completion]:shell:(bash zsh "
          "fish)' \\\n";
@@ -89,7 +89,9 @@ std::string ZshCompletion() {
   out << "    '--ctrl-c-before-output[Send Ctrl+C before Linux type/paste "
          "output]' \\\n";
 #endif
-  out << "    '--help[Show help]'\n"
+  out << "    '--help[Show help]' \\\n"
+      << "    'doctor[Check runtime integration readiness]' \\\n"
+      << "    'providers[Manage provider credentials]'\n"
       << "}\n"
       << "_llm_rewriter \"$@\"\n";
   return out.str();
@@ -102,11 +104,15 @@ std::string FishCompletion() {
   out << "complete -c llm-rewriter -l output -d 'Output mode' -xa '"
       << OutputChoicesForShell() << "'\n";
   out << "complete -c llm-rewriter -l model -d 'LLM model id' -r\n";
-  out << "complete -c llm-rewriter -l reasoning-effort -d 'Reasoning effort' "
-         "-xa 'off low medium high'\n";
+  out << "complete -c llm-rewriter -l reasoning -d "
+         "'Provider-specific reasoning string' -r\n";
   out << "complete -c llm-rewriter -l config -d 'Config file path' -r\n";
   out << "complete -c llm-rewriter -l generate-completion -d 'Generate "
          "shell completion' -xa 'bash zsh fish'\n";
+  out << "complete -c llm-rewriter -n '__fish_use_subcommand' -a doctor -d "
+         "'Check runtime integration readiness'\n";
+  out << "complete -c llm-rewriter -n '__fish_use_subcommand' -a providers -d "
+         "'Manage provider credentials'\n";
 #if defined(__linux__)
   out << "complete -c llm-rewriter -l ctrl-c-before-output -d 'Send Ctrl+C "
          "before Linux type/paste output'\n";
@@ -168,7 +174,12 @@ void ConfigureCliApp(CLI::App& app,
                      std::string& output,
                      std::string& completion_shell,
                      CLI::Option*& input_option,
-                     CLI::Option*& output_option) {
+                     CLI::Option*& output_option,
+                     CLI::App*& doctor_command,
+                     CLI::App*& providers_command,
+                     CLI::App*& provider_status_command,
+                     CLI::App*& provider_configure_command,
+                     CLI::App*& provider_clear_command) {
   app.allow_extras(false);
 
   input = ToString(options.input);
@@ -188,9 +199,8 @@ void ConfigureCliApp(CLI::App& app,
       }));
   app.add_option("--config", options.config_path, "Config file path");
   app.add_option("--model", options.model, "LLM model id");
-  app.add_option("--reasoning-effort", options.reasoning_effort,
-                 "Reasoning effort to request from the provider")
-      ->check(CLI::IsMember({"off", "low", "medium", "high"}));
+  app.add_option("--reasoning", options.reasoning,
+                 "Provider-specific reasoning string");
   app.add_option("--generate-completion", completion_shell,
                  "Generate shell completion for bash, zsh, or fish")
       ->check(CLI::IsMember({"bash", "zsh", "fish"}));
@@ -199,6 +209,32 @@ void ConfigureCliApp(CLI::App& app,
                "Send Ctrl+C before Linux type/paste output. This can interrupt "
                "the focused application.");
 #endif
+  doctor_command = app.add_subcommand(
+      "doctor", "Check Linux runtime integration readiness");
+  doctor_command->fallthrough();
+  doctor_command->add_flag("--live", options.doctor_live,
+                           "Run live checks that may emit notifications or "
+                           "probe helper daemons.");
+  providers_command =
+      app.add_subcommand("providers", "Manage provider credentials");
+  provider_status_command =
+      providers_command->add_subcommand("status", "Show redacted credential status");
+  provider_status_command->add_option("provider", options.credential_provider)
+      ->check(CLI::IsMember({"openai", "anthropic", "gemini", "openrouter",
+                             "codex", "custom"}));
+  provider_configure_command = providers_command->add_subcommand(
+      "configure", "Acquire a provider credential through a secret-safe channel");
+  provider_configure_command->add_option("provider", options.credential_provider)
+      ->check(CLI::IsMember({"openai", "anthropic", "gemini", "openrouter",
+                             "codex"}));
+  provider_configure_command->add_flag(
+      "--device-code", options.device_code,
+      "Use Codex device authorization instead of browser authorization");
+  provider_clear_command =
+      providers_command->add_subcommand("clear", "Clear an app-owned credential");
+  provider_clear_command->add_option("provider", options.credential_provider)
+      ->check(CLI::IsMember({"openai", "anthropic", "gemini", "openrouter",
+                             "codex"}));
 }
 
 CliParseResult ParseVector(std::vector<std::string> args) {
@@ -208,9 +244,16 @@ CliParseResult ParseVector(std::vector<std::string> args) {
   std::string completion_shell;
   CLI::Option* input_option = nullptr;
   CLI::Option* output_option = nullptr;
+  CLI::App* doctor_command = nullptr;
+  CLI::App* providers_command = nullptr;
+  CLI::App* provider_status_command = nullptr;
+  CLI::App* provider_configure_command = nullptr;
+  CLI::App* provider_clear_command = nullptr;
   CLI::App app{"Native LLM rewrite utility"};
   ConfigureCliApp(app, options, input, output, completion_shell, input_option,
-                  output_option);
+                  output_option, doctor_command, providers_command,
+                  provider_status_command, provider_configure_command,
+                  provider_clear_command);
 
   try {
     app.parse(args);
@@ -223,6 +266,35 @@ CliParseResult ParseVector(std::vector<std::string> args) {
     options.input_explicit = input_option != nullptr && input_option->count() > 0;
     options.output_explicit =
         output_option != nullptr && output_option->count() > 0;
+    if (doctor_command != nullptr && doctor_command->parsed()) {
+      options.command = CliCommand::Doctor;
+    }
+    if (providers_command != nullptr && providers_command->parsed()) {
+      options.command = CliCommand::Providers;
+      if (provider_configure_command->parsed()) {
+        options.provider_command = ProviderCredentialCommand::Configure;
+      } else if (provider_clear_command->parsed()) {
+        options.provider_command = ProviderCredentialCommand::Clear;
+      } else {
+        options.provider_command = ProviderCredentialCommand::Status;
+      }
+      if (options.provider_command == ProviderCredentialCommand::Status &&
+          options.credential_provider.empty()) {
+        options.credential_provider = "openrouter";
+      }
+      if (options.provider_command == ProviderCredentialCommand::Configure &&
+          options.credential_provider.empty()) {
+        throw CLI::ValidationError("provider", "a provider is required");
+      }
+      if (options.provider_command == ProviderCredentialCommand::Clear &&
+          options.credential_provider.empty()) {
+        throw CLI::ValidationError("provider", "a provider is required");
+      }
+      if (options.device_code && options.credential_provider != "codex") {
+        throw CLI::ValidationError("--device-code",
+                                   "only applies to providers configure codex");
+      }
+    }
 #if defined(__linux__)
     if (options.ctrl_c_before_output && options.output != OutputMode::Type &&
         options.output != OutputMode::Paste) {

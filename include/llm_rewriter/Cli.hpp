@@ -24,18 +24,36 @@ enum class OutputMode {
 #endif
 };
 
+enum class CliCommand {
+  Rewrite,
+  Doctor,
+  Providers,
+};
+
+enum class ProviderCredentialCommand {
+  Status,
+  Configure,
+  Clear,
+};
+
 struct CliOptions {
+  CliCommand command = CliCommand::Rewrite;
   InputMode input = InputMode::Clipboard;
   OutputMode output = OutputMode::Preview;
   bool input_explicit = false;
   bool output_explicit = false;
   std::optional<std::string> model;
-  std::optional<std::string> reasoning_effort;
+  std::optional<std::string> reasoning;
   std::string config_path;
 #if defined(__linux__)
   bool ctrl_c_before_output = false;
   PasteShortcut paste_shortcut = PasteShortcut::CtrlV;
 #endif
+  bool doctor_live = false;
+  ProviderCredentialCommand provider_command =
+      ProviderCredentialCommand::Status;
+  std::string credential_provider;
+  bool device_code = false;
 };
 
 struct CliParseResult {

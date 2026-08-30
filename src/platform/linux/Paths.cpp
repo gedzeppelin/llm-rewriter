@@ -26,20 +26,15 @@ std::filesystem::path EnvPath(const char* name,
 UserPaths ResolveUserPaths() {
   const auto home = HomeDir();
 
-#if defined(__APPLE__)
-  const auto base = home / "Library" / "Application Support" / "llm-rewriter";
-  return {.config_dir = base,
-          .data_dir = base,
-          .config_file = base / "config.ini",
-          .history_file = base / "history.jsonl"};
-#elif defined(_WIN32)
+#if defined(_WIN32)
   const char* appdata = std::getenv("APPDATA");
   const auto base = std::filesystem::path(appdata != nullptr ? appdata : ".") /
                     "llm-rewriter";
   return {.config_dir = base,
           .data_dir = base,
-          .config_file = base / "config.ini",
-          .history_file = base / "history.jsonl"};
+          .config_file = base / "config.json",
+          .history_file = base / "history.jsonl",
+          .diagnostics_file = base / "diagnostics.jsonl"};
 #else
   const auto config_dir =
       EnvPath("XDG_CONFIG_HOME", home / ".config") / "llm-rewriter";
@@ -47,8 +42,9 @@ UserPaths ResolveUserPaths() {
       EnvPath("XDG_DATA_HOME", home / ".local" / "share") / "llm-rewriter";
   return {.config_dir = config_dir,
           .data_dir = data_dir,
-          .config_file = config_dir / "config.ini",
-          .history_file = data_dir / "history.jsonl"};
+          .config_file = config_dir / "config.json",
+          .history_file = data_dir / "history.jsonl",
+          .diagnostics_file = data_dir / "diagnostics.jsonl"};
 #endif
 }
 

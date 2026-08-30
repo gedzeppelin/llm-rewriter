@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <string>
 
 namespace llm_rewriter {
 
@@ -9,6 +10,7 @@ struct UserPaths {
   std::filesystem::path data_dir;
   std::filesystem::path config_file;
   std::filesystem::path history_file;
+  std::filesystem::path diagnostics_file;
 };
 
 UserPaths ResolveUserPaths();

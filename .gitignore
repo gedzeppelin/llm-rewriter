@@ -1,3 +1,7 @@
+# Code intelligence
+.agents/
+.codebase-memory/
+
 # Prerequisites
 *.d
 
@@ -66,3 +70,7 @@ vcpkg_installed/
 # test output & cache
 Testing/
 .cache/
+
+###
+.agents/skills
+skills-lock.json
