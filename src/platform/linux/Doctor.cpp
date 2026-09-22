@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <sys/stat.h>
 #include <string>
 #include <system_error>
 
@@ -34,12 +35,23 @@ bool ParentWritable(const std::filesystem::path& path) {
   if (parent.empty()) {
     return false;
   }
-  if (!std::filesystem::exists(parent, error)) {
+  if (std::filesystem::is_symlink(parent, error) || error) {
+    return false;
+  }
+  const bool existed = std::filesystem::exists(parent, error);
+  if (error) return false;
+  if (!existed) {
     std::filesystem::create_directories(parent, error);
   }
   if (error) {
     return false;
   }
+#if !defined(_WIN32)
+  if ((!existed || parent.filename() == "llm-rewriter") &&
+      ::chmod(parent.c_str(), 0700) != 0) {
+    return false;
+  }
+#endif
   const auto probe = parent / ".llm-rewriter-doctor.tmp";
   {
     std::ofstream output(probe);
@@ -49,6 +61,18 @@ bool ParentWritable(const std::filesystem::path& path) {
   }
   std::filesystem::remove(probe, error);
   return true;
+}
+
+bool SecureFilePermissions(const std::filesystem::path& path) {
+  std::error_code error;
+  if (std::filesystem::is_symlink(path, error) || error) return false;
+  if (!std::filesystem::exists(path, error)) return true;
+  if (error || !std::filesystem::is_regular_file(path, error) || error) {
+    return false;
+  }
+  struct stat metadata {};
+  if (::stat(path.c_str(), &metadata) != 0) return false;
+  return (metadata.st_mode & 0777) == 0600;
 }
 
 std::string YesNo(bool value) {
@@ -116,7 +140,11 @@ RuntimeStatus ProbeRuntime(const AppConfig& config,
   status.config_readable = std::filesystem::exists(paths.config_file)
                                ? std::filesystem::is_regular_file(paths.config_file)
                                : status.config_parent_writable;
+  status.config_secure_permissions = SecureFilePermissions(paths.config_file);
   status.history_parent_writable = ParentWritable(paths.history_file);
+  status.history_secure_permissions = SecureFilePermissions(paths.history_file);
+  status.diagnostics_secure_permissions =
+      SecureFilePermissions(paths.diagnostics_file);
   CredentialDependencies dependencies;
   dependencies.store = CreatePlatformCredentialStore();
   CredentialResolver credentials(config.codex_auth_file, dependencies);
@@ -146,6 +174,10 @@ DoctorReport BuildDoctorReport(const AppConfig& config,
   Line(out, "config readable or creatable", status.config_readable);
   Line(out, "config directory writable", status.config_parent_writable);
   Line(out, "history directory writable", status.history_parent_writable);
+  Line(out, "config permissions private", status.config_secure_permissions);
+  Line(out, "history permissions private", status.history_secure_permissions);
+  Line(out, "diagnostics permissions private",
+       status.diagnostics_secure_permissions);
   Line(out, "model configured", !config.model.empty());
   Line(out, "provider credential available", status.credential_available);
   out << "  input: " << ToString(options.input) << '\n';
@@ -157,6 +189,15 @@ DoctorReport BuildDoctorReport(const AppConfig& config,
   }
   if (!status.config_readable || !status.history_parent_writable) {
     ok = false;
+  }
+  if (!status.config_secure_permissions) {
+    ok = false;
+    out << "issue: config.json is not private (expected mode 0600).\n";
+  }
+  if (!status.history_secure_permissions ||
+      !status.diagnostics_secure_permissions) {
+    out << "warning: history or diagnostics files are not private (expected "
+            "mode 0600).\n";
   }
   if ((options.input == InputMode::Clipboard &&
        !status.clipboard_read_available) ||

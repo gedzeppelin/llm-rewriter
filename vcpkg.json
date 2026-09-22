@@ -1,0 +1,9 @@
+{
+  "name": "llm-rewriter",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "cli11",
+    "nlohmann-json",
+    "doctest"
+  ]
+}

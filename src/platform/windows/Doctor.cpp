@@ -58,18 +58,25 @@ DoctorReport BuildDoctorReport(const AppConfig& config,
                                const RuntimeStatus& status) {
   const bool paths_ok = status.config_readable &&
                         status.history_parent_writable;
-  const bool ok = !config.model.empty() && paths_ok;
+  const bool ok = !config.model.empty() && paths_ok &&
+                  status.config_secure_permissions;
   std::ostringstream out;
   out << "llm-rewriter doctor\nplatform: windows\n"
       << "config: " << paths.config_file << '\n'
       << "history: " << paths.history_file << '\n'
       << "diagnostics: " << paths.diagnostics_file << '\n'
+      << "notifications: unavailable (Windows notifications are not implemented)\n"
+      << "config permissions private: "
+      << (status.config_secure_permissions ? "yes" : "no") << '\n'
       << "model configured: " << (!config.model.empty() ? "yes" : "no") << '\n'
       << "provider credential available: "
       << (status.credential_available ? "yes" : "no") << '\n'
       << "input: " << ToString(options.input) << '\n'
-      << "output: " << ToString(options.output) << '\n'
-      << "result: " << (ok ? "ready" : "not ready") << '\n';
+      << "output: " << ToString(options.output) << '\n';
+  if (!status.config_secure_permissions) {
+    out << "issue: config.json permissions are not private.\n";
+  }
+  out << "result: " << (ok ? "ready" : "not ready") << '\n';
   return {.ok = ok, .text = out.str()};
 }
 

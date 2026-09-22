@@ -22,7 +22,10 @@ struct RuntimeStatus {
   bool notifications_available = false;
   bool config_parent_writable = false;
   bool config_readable = false;
+  bool config_secure_permissions = true;
   bool history_parent_writable = false;
+  bool history_secure_permissions = true;
+  bool diagnostics_secure_permissions = true;
   bool credential_available = false;
   std::vector<Detail> details;
 };

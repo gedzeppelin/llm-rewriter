@@ -76,6 +76,8 @@ std::string ToString(NotificationEvents events);
 std::string ToString(PasteShortcut shortcut);
 AppConfig LoadConfig(const std::filesystem::path& config_path);
 bool EnsureDefaultConfigFile(const std::filesystem::path& config_path);
+bool SaveConfig(const std::filesystem::path& config_path,
+                const AppConfig& config);
 bool SetConfigValue(const std::filesystem::path& config_path,
                     const std::string& key,
                     const std::string& value);

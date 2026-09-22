@@ -1,5 +1,7 @@
 #include "llm_rewriter/Diagnostics.hpp"
 
+#include "SecureFile.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <chrono>
@@ -50,17 +52,15 @@ void JsonlDiagnosticSink::Record(const DiagnosticEvent& event) {
   if (path_.empty()) {
     return;
   }
-  std::error_code error;
-  if (path_.has_parent_path()) {
-    std::filesystem::create_directories(path_.parent_path(), error);
-  }
-  if (error) {
+  if (!internal::IsRegularFileOrMissing(path_) ||
+      !internal::PrepareSecureParent(path_)) {
     return;
   }
   std::ofstream output(path_, std::ios::app);
   if (!output) {
     return;
   }
+  if (!internal::SetPrivateFilePermissions(path_)) return;
   const auto now = std::chrono::system_clock::now().time_since_epoch();
   const auto timestamp_ms =
       std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
@@ -80,6 +80,7 @@ void JsonlDiagnosticSink::Record(const DiagnosticEvent& event) {
       {"error_code", event.error_code},
       {"error", event.error}};
   output << line.dump() << '\n';
+  output.flush();
 }
 
 void RecordDiagnostic(IDiagnosticSink* sink,

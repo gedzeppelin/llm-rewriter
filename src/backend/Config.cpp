@@ -1,5 +1,7 @@
 #include "llm_rewriter/Config.hpp"
 
+#include "SecureFile.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
@@ -33,16 +35,6 @@ std::string Lower(std::string value) {
     return static_cast<char>(std::tolower(c));
   });
   return value;
-}
-
-std::string ReadTextFile(const std::filesystem::path& path) {
-  std::ifstream input(path);
-  if (!input) {
-    return {};
-  }
-  std::ostringstream output;
-  output << input.rdbuf();
-  return output.str();
 }
 
 std::filesystem::path ExpandConfigPath(const std::string& path) {
@@ -251,8 +243,7 @@ Json DefaultConfigDocument() {
        Json{{"headers", Json::object()},
             {"query_parameters", Json::object()},
             {"request_body", Json::object()}}},
-      {"system_prompt", ""},
-      {"system_prompt_file", ""}};
+      {"system_prompt", ""}};
 }
 
 void MergeMissing(Json& target, const Json& defaults) {
@@ -293,18 +284,50 @@ bool WriteConfigJson(const std::filesystem::path& path, const Json& document) {
   if (path.empty()) {
     return false;
   }
-  if (path.has_parent_path()) {
+  if (internal::IsSymlink(path) || !internal::PrepareSecureParent(path)) {
+    return false;
+  }
+
+  std::filesystem::path temporary;
+  for (unsigned attempt = 0; attempt != 8; ++attempt) {
+    const auto candidate = internal::SecureTempPath(path, attempt);
     std::error_code error;
-    std::filesystem::create_directories(path.parent_path(), error);
-    if (error) {
+    if (!std::filesystem::exists(candidate, error) && !error) {
+      temporary = candidate;
+      break;
+    }
+  }
+  if (temporary.empty() || internal::IsSymlink(temporary)) return false;
+
+  {
+    std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
+    if (!output || !internal::SetPrivateFilePermissions(temporary)) {
+      std::error_code ignored;
+      std::filesystem::remove(temporary, ignored);
+      return false;
+    }
+    output << document.dump(2) << '\n';
+    output.flush();
+    if (!output) {
+      output.close();
+      std::error_code ignored;
+      std::filesystem::remove(temporary, ignored);
+      return false;
+    }
+    output.close();
+    if (!output) {
+      std::error_code ignored;
+      std::filesystem::remove(temporary, ignored);
       return false;
     }
   }
-  std::ofstream output(path, std::ios::trunc);
-  if (!output) {
+
+  if (!internal::AtomicReplace(temporary, path) ||
+      !internal::SetPrivateFilePermissions(path)) {
+    std::error_code ignored;
+    std::filesystem::remove(temporary, ignored);
     return false;
   }
-  output << document.dump(2) << '\n';
   return true;
 }
 
@@ -383,12 +406,6 @@ AppConfig LoadConfigFromJson(const Json& document) {
       request_body.is_object() ? request_body : Json::object();
 
   config.system_prompt = StringValue(document, "system_prompt");
-  if (Trim(config.system_prompt).empty()) {
-    const auto prompt_file = Trim(StringValue(document, "system_prompt_file"));
-    if (!prompt_file.empty()) {
-      config.system_prompt = ReadTextFile(ExpandConfigPath(prompt_file));
-    }
-  }
   if (Trim(config.system_prompt).empty()) {
     config.system_prompt = DefaultSystemPrompt();
   }
@@ -574,8 +591,6 @@ bool ApplyConfigValue(Json& document,
     notifications["events"] = ToString(*parsed);
   } else if (key == "system_prompt") {
     document["system_prompt"] = value;
-  } else if (key == "system_prompt_file") {
-    document["system_prompt_file"] = string_value;
   } else if (!SetCustomProviderValue(document, key, value)) {
     return false;
   }
@@ -717,6 +732,85 @@ bool EnsureDefaultConfigFile(const std::filesystem::path& config_path) {
   return WriteConfigJson(config_path, DefaultConfigDocument());
 }
 
+bool SaveConfig(const std::filesystem::path& config_path,
+                const AppConfig& config) {
+  if (config_path.empty()) {
+    return false;
+  }
+  try {
+    auto document = ReadConfigJson(config_path);
+    MergeMissing(document, DefaultConfigDocument());
+    // This key was removed from the public configuration model.  Drop it
+    // while saving so an older config is migrated on the next write.
+    document.erase("system_prompt_file");
+    if (document.contains("credentials") &&
+        document["credentials"].is_object()) {
+      document["credentials"].erase("api_key");
+      document["credentials"].erase("api_key_env");
+      document["credentials"].erase("bearer_token_env");
+    }
+
+    const auto set_value = [&](const std::string& key,
+                               const std::string& value) {
+      return ApplyConfigValue(document, key, value);
+    };
+    if (!set_value("provider", config.provider) ||
+        !set_value("api_format", ToString(config.api_format)) ||
+        !set_value("base_url", config.base_url) ||
+        !set_value("model", config.model) ||
+        !set_value("input", config.input_mode) ||
+        !set_value("output", config.output_mode) ||
+        !set_value("paste_shortcut", ToString(config.paste_shortcut)) ||
+        !set_value("credential", config.credential) ||
+        !set_value("reasoning", config.reasoning) ||
+        !set_value("history_enabled", config.history_enabled ? "true" : "false") ||
+        !set_value("timeout_ms", std::to_string(config.timeout.count())) ||
+        !set_value("min_output_tokens", std::to_string(config.min_output_tokens)) ||
+        !set_value("max_output_tokens_limit",
+                   std::to_string(config.max_output_tokens_limit)) ||
+        !set_value("output_token_multiplier",
+                   std::to_string(config.output_token_multiplier)) ||
+        !set_value("output_token_padding",
+                   std::to_string(config.output_token_padding)) ||
+        !set_value("notification_mode", ToString(config.notification_mode)) ||
+        !set_value("notification_events", ToString(config.notification_events))) {
+      return false;
+    }
+
+    const auto codex_auth_file =
+        config.codex_auth_file ? config.codex_auth_file->string() : "";
+    if (!set_value("codex_auth_file", codex_auth_file)) {
+      return false;
+    }
+
+    Json headers = Json::object();
+    for (const auto& [key, value] : config.custom_provider.headers) {
+      headers[key] = value;
+    }
+    if (!set_value("custom_provider.headers", headers.dump())) {
+      return false;
+    }
+
+    Json query_parameters = Json::object();
+    for (const auto& [key, value] : config.custom_provider.query_parameters) {
+      query_parameters[key] = value;
+    }
+    if (!set_value("custom_provider.query_parameters",
+                  query_parameters.dump())) {
+      return false;
+    }
+
+    if (!set_value("custom_provider.request_body",
+                   config.custom_provider.request_body.dump()) ||
+        !set_value("system_prompt", config.system_prompt)) {
+      return false;
+    }
+    return WriteConfigJson(config_path, document);
+  } catch (...) {
+    return false;
+  }
+}
+
 bool SetConfigValue(const std::filesystem::path& config_path,
                     const std::string& key,
                     const std::string& value) {
@@ -726,6 +820,7 @@ bool SetConfigValue(const std::filesystem::path& config_path,
   try {
     auto document = ReadConfigJson(config_path);
     MergeMissing(document, DefaultConfigDocument());
+    document.erase("system_prompt_file");
     if (document.contains("credentials") &&
         document["credentials"].is_object()) {
       document["credentials"].erase("api_key");

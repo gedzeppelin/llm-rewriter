@@ -1,0 +1,101 @@
+name: Linux
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential clang cmake ninja-build python3 gobject-introspection \
+            libcurl4-openssl-dev libcli11-dev nlohmann-json3-dev doctest-dev \
+            libgtk-4-dev libadwaita-1-dev pkg-config
+
+      - name: Configure
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_CXX_COMPILER=clang++
+          -DLLM_REWRITER_BUILD_GTK4=ON
+          -DBUILD_TESTING=ON
+
+      - name: Build
+        run: |
+          export GI_GIR_PATH="/usr/lib/$(gcc -print-multiarch)/gir-1.0:/usr/share/gir-1.0"
+          cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Install staging tree
+        run: cmake --install build --prefix stage
+
+      - name: Package CLI
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_NAME: llm-rewriter-${{ github.ref_name }}-linux-x86_64.tar.gz
+        run: tar -czf "$RELEASE_NAME" -C stage bin/llm-rewriter
+
+      - name: Upload CLI artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-rewriter-${{ github.ref_name }}-linux-x86_64
+          path: llm-rewriter-${{ github.ref_name }}-linux-x86_64.tar.gz
+
+      - name: Package GTK4 frontend
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_NAME: llm-rewriter-${{ github.ref_name }}-linux-x86_64-gtk4.tar.gz
+        run: tar -czf "$RELEASE_NAME" -C stage \
+          bin/llm-rewriter-gtk4 share/applications/llm_rewriter.desktop
+
+      - name: Upload GTK4 artifact
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: llm-rewriter-${{ github.ref_name }}-linux-x86_64-gtk4
+          path: llm-rewriter-${{ github.ref_name }}-linux-x86_64-gtk4.tar.gz
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download CLI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: llm-rewriter-${{ github.ref_name }}-linux-x86_64
+          path: release/cli
+
+      - name: Download GTK4 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: llm-rewriter-${{ github.ref_name }}-linux-x86_64-gtk4
+          path: release/gtk4
+
+      - name: Publish tagged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes \
+          "release/cli/llm-rewriter-${GITHUB_REF_NAME}-linux-x86_64.tar.gz" \
+          "release/gtk4/llm-rewriter-${GITHUB_REF_NAME}-linux-x86_64-gtk4.tar.gz"

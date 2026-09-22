@@ -51,7 +51,6 @@ build-*/
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
-Makefile
 install_manifest.txt
 compile_commands.json
 
@@ -60,6 +59,11 @@ compile_commands.json
 *.log
 *.bak
 *.swp
+
+# Local credentials
+.env
+.env.*
+!.env.example
 
 # vcpkg
 vcpkg_installed/

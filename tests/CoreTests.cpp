@@ -27,6 +27,10 @@
 #include <string>
 #include <vector>
 
+#if !defined(_WIN32)
+#include <sys/stat.h>
+#endif
+
 namespace flr = llm_rewriter;
 
 namespace {
@@ -163,9 +167,7 @@ int PostJsonForAbiTest(void*,
 
 }  // namespace
 
-TEST_CASE("JSON config parser handles sections, prompt files, and custom provider fields") {
-  const auto prompt_file =
-      WriteTempConfig("llm-rewriter-prompt-test.md", "prompt from file");
+TEST_CASE("JSON config parser handles sections and custom provider fields") {
   const auto path =
       WriteTempConfig("llm-rewriter-config-test.json",
                       nlohmann::json{
@@ -184,12 +186,12 @@ TEST_CASE("JSON config parser handles sections, prompt files, and custom provide
                            {{"headers", {{"X-Test", "yes"}}},
                             {"query_parameters", {{"api-version", "2026-01-01"}}},
                             {"request_body", {{"metadata", {{"source", "test"}}}}}}},
-                          {"system_prompt_file", prompt_file.string()}}
+                          {"system_prompt_file", "prompt-from-file.md"}}
                           .dump(2));
 
   const auto config = flr::LoadConfig(path);
   CHECK(config.credential == "configured-secret");
-  CHECK(config.system_prompt == "prompt from file");
+  CHECK(config.system_prompt == flr::DefaultSystemPrompt());
   CHECK(config.input_mode == "stdin");
   CHECK(config.output_mode == "stdout");
   CHECK(config.reasoning == "high");
@@ -595,6 +597,91 @@ TEST_CASE("config value writer updates JSON config file") {
   std::filesystem::remove(dir);
 }
 
+TEST_CASE("config writer saves the complete application configuration") {
+  const auto dir =
+      std::filesystem::temp_directory_path() / "llm-rewriter-save-config-test";
+  const auto path = dir / "config.json";
+  std::filesystem::remove(path);
+  std::filesystem::remove(dir);
+
+  REQUIRE(flr::EnsureDefaultConfigFile(path));
+  {
+    std::ifstream input(path);
+    auto document = nlohmann::json::parse(input);
+    document["unknown_setting"] = nlohmann::json{{"preserved", true}};
+    document["system_prompt_file"] = "stale-prompt.md";
+    std::ofstream output(path);
+    output << document.dump(2) << '\n';
+  }
+  flr::AppConfig config;
+  config.provider = "custom";
+  config.api_format = flr::ApiFormat::AnthropicMessages;
+  config.base_url = "https://example.test/v1";
+  config.model = "custom/model";
+  config.input_mode = "primary";
+  config.output_mode = "stdout";
+  config.credential = "configured-secret";
+  config.codex_auth_file = dir / "codex-auth.json";
+  config.reasoning = "high";
+  config.timeout = std::chrono::milliseconds{45000};
+  config.history_enabled = false;
+  config.min_output_tokens = 512;
+  config.max_output_tokens_limit = 8192;
+  config.output_token_multiplier = 2.0;
+  config.output_token_padding = 256;
+  config.notification_mode = flr::NotificationMode::Always;
+  config.notification_events = flr::NotificationEvents::Completion;
+  config.paste_shortcut = flr::PasteShortcut::ShiftInsert;
+  config.custom_provider.headers["X-Test"] = "header";
+  config.custom_provider.query_parameters["debug"] = "true";
+  config.custom_provider.request_body =
+      nlohmann::json{{"source", "test"}};
+  config.system_prompt = "Rewrite in active voice.";
+
+  CHECK(flr::SaveConfig(path, config));
+  const auto saved = flr::LoadConfig(path);
+  CHECK(saved.provider == "custom");
+  CHECK(saved.api_format == flr::ApiFormat::AnthropicMessages);
+  CHECK(saved.base_url == "https://example.test/v1");
+  CHECK(saved.model == "custom/model");
+  CHECK(saved.input_mode == "primary");
+  CHECK(saved.output_mode == "stdout");
+  CHECK(saved.credential == "configured-secret");
+  CHECK(saved.codex_auth_file == dir / "codex-auth.json");
+  CHECK(saved.reasoning == "high");
+  CHECK(saved.timeout == std::chrono::milliseconds{45000});
+  CHECK_FALSE(saved.history_enabled);
+  CHECK(saved.min_output_tokens == 512);
+  CHECK(saved.max_output_tokens_limit == 8192);
+  CHECK(saved.output_token_multiplier == 2.0);
+  CHECK(saved.output_token_padding == 256);
+  CHECK(saved.notification_mode == flr::NotificationMode::Always);
+  CHECK(saved.notification_events == flr::NotificationEvents::Completion);
+  CHECK(saved.paste_shortcut == flr::PasteShortcut::ShiftInsert);
+  CHECK(saved.custom_provider.headers.at("X-Test") == "header");
+  CHECK(saved.custom_provider.query_parameters.at("debug") == "true");
+  CHECK(saved.custom_provider.request_body["source"] == "test");
+  CHECK(saved.system_prompt == "Rewrite in active voice.");
+
+  {
+    std::ifstream input(path);
+    const auto document = nlohmann::json::parse(input);
+    CHECK(document["unknown_setting"]["preserved"] == true);
+    CHECK_FALSE(document.contains("system_prompt_file"));
+  }
+#if !defined(_WIN32)
+  struct stat config_metadata {};
+  REQUIRE(::stat(path.c_str(), &config_metadata) == 0);
+  CHECK((config_metadata.st_mode & 0777) == 0600);
+  struct stat directory_metadata {};
+  REQUIRE(::stat(dir.c_str(), &directory_metadata) == 0);
+  CHECK((directory_metadata.st_mode & 0777) == 0700);
+#endif
+
+  std::filesystem::remove(path);
+  std::filesystem::remove(dir);
+}
+
 TEST_CASE("token estimation clamps with 64k default limit") {
   flr::AppConfig config;
   CHECK(config.max_output_tokens_limit == 65536);
@@ -887,6 +974,11 @@ TEST_CASE("doctor report validates configured platform workflow") {
   CHECK_FALSE(report.ok);
   CHECK(report.text.find("ydotool+ydotoold") != std::string::npos);
 #endif
+
+  status.config_secure_permissions = false;
+  report = flr::BuildDoctorReport(config, options, paths, status);
+  CHECK_FALSE(report.ok);
+  CHECK(report.text.find("config.json is not private") != std::string::npos);
 }
 
 TEST_CASE("history records explicit reasoning value") {
@@ -911,6 +1003,73 @@ TEST_CASE("history records explicit reasoning value") {
   std::getline(input, line);
   const auto json = nlohmann::json::parse(line);
   CHECK(json["reasoning"] == "high");
+#if !defined(_WIN32)
+  struct stat history_metadata {};
+  REQUIRE(::stat(path.c_str(), &history_metadata) == 0);
+  CHECK((history_metadata.st_mode & 0777) == 0600);
+  struct stat history_directory_metadata {};
+  REQUIRE(::stat(dir.c_str(), &history_directory_metadata) == 0);
+  CHECK((history_directory_metadata.st_mode & 0777) == 0700);
+#endif
+
+  std::filesystem::remove(path);
+  std::filesystem::remove(dir);
+}
+
+TEST_CASE("history loader tolerates malformed lines and searches newest first") {
+  const auto dir = std::filesystem::temp_directory_path() /
+                   "llm-rewriter-history-loader-test";
+  const auto path = dir / "history.jsonl";
+  std::filesystem::remove(path);
+  std::filesystem::remove(dir);
+  std::filesystem::create_directories(dir);
+  {
+    std::ofstream output(path);
+    output << nlohmann::json{{"timestamp_ms", 100},
+                             {"provider", "openai"},
+                             {"model", "older"},
+                             {"ok", true},
+                             {"request_id", "old"},
+                             {"duration_ms", 12},
+                             {"input", "A draft"},
+                             {"output", "An answer"}}
+                    .dump()
+            << '\n';
+    output << "not-json\n";
+    output << nlohmann::json{{"timestamp_ms", 200},
+                             {"provider", "anthropic"},
+                             {"model", "newer"},
+                             {"ok", false},
+                             {"request_id", "new"},
+                             {"http_status", 500},
+                             {"error", "rate limited"},
+                             {"input", "Second draft"},
+                             {"output", ""}}
+                    .dump()
+            << '\n';
+  }
+
+  const auto entries = flr::LoadHistory(path);
+  REQUIRE(entries.size() == 2);
+  CHECK(entries[0].timestamp_ms == 200);
+  CHECK(entries[0].request_id == "new");
+  CHECK(entries[0].http_status == 500);
+  CHECK(entries[0].duration == std::chrono::milliseconds{0});
+  CHECK_FALSE(entries[0].ok);
+  CHECK(entries[1].duration == std::chrono::milliseconds{12});
+  CHECK(entries[1].Identity() == "old:100");
+
+  const auto matches = flr::SearchHistory(entries, "ANTHROPIC");
+  REQUIRE(matches.size() == 1);
+  CHECK(matches.front().request_id == "new");
+  const auto ranked = flr::HistorySearchIndex(entries).Search("draft answer");
+  REQUIRE(ranked.size() == 2);
+  CHECK(ranked.front().request_id == "old");
+  const auto page = flr::HistorySearchIndex(entries).SearchPage("draft", 0, 1);
+  CHECK(page.total_matches == 2);
+  REQUIRE(page.entries.size() == 1);
+  CHECK(page.entries.front().request_id == "new");
+  CHECK(flr::LoadHistory(dir / "missing.jsonl").empty());
 
   std::filesystem::remove(path);
   std::filesystem::remove(dir);
